@@ -1,0 +1,28 @@
+# Unconstrained victim (control), trained alone with PPO, no predator.
+# Run (from the folder that contains predation/):
+#   .venv/bin/python -m predation.train_victim predation/configs/victim_unconstrained.yaml --seed 0
+
+name: victim_unconstrained
+
+train:
+  iterations: 100        # one iteration = one rollout of B episodes + one PPO update
+  log_every: 5           # print a line to the console every N iterations (the CSV gets all)
+  eval_episodes: 2000    # fresh episodes for the final deterministic evaluation
+
+env:                     # arguments of VecMarket; anything not listed keeps its default
+  B: 256                 # parallel episodes per rollout
+  T: 120
+  shield_limit: null     # no hard constraint
+
+ppo:                     # fields of PPOConfig
+  lr: 3.0e-4
+  gamma: 0.99
+  lam: 0.95
+  clip: 0.2
+  epochs: 10
+  minibatch: 2048
+  vf_coef: 0.5
+  ent_coef: 0.0
+  max_grad_norm: 0.5
+  reward_scale: 100.0
+  hidden: 64
