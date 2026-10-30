@@ -2,6 +2,9 @@
 
 Usage (from the folder that contains predation/):
     .venv/bin/python -m predation.train_victim predation/configs/victim_unconstrained.yaml --seed 0
+    ... --set env.B=512 train.iterations=200     # override any config field
+    ... --iterations 200 --B 512 --T 60 --name my_run   # shortcuts for the common ones
+For several seeds in parallel use predation.launch.
 
 Writes predation/runs/<name>/seed<seed>/:
     config.yaml   resolved config incl. seed (what was actually run)
@@ -13,7 +16,10 @@ Writes predation/runs/<name>/seed<seed>/:
                   .venv/bin/tensorboard --logdir predation/runs
 """
 import argparse
+import copy
 import csv
+import dataclasses
+import inspect
 import json
 import sys
 import time
@@ -45,6 +51,77 @@ TB_TAGS = {"pnl_mean": "victim/pnl", "mean_frac": "victim/mean_frac", "ep_cost":
 def load_config(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def parse_value(text: str):
+    """'512' -> 512, '3e-4' -> 0.0003, 'null' -> None, 'true' -> True, 'abc' -> 'abc'."""
+    value = yaml.safe_load(text)
+    if isinstance(value, str):  # YAML reads '3e-4' (no dot) as a string
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return value
+
+
+def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
+    """['env.B=512', 'train.iterations=50'] -> copy of cfg with these fields replaced."""
+    cfg = copy.deepcopy(cfg)
+    for item in overrides:
+        key, sep, text = item.partition("=")
+        if not sep:
+            raise ValueError(f"--set expects KEY=VALUE, got {item!r}")
+        *path, last = key.split(".")
+        node = cfg
+        for part in path:
+            node = node.setdefault(part, {})
+        node[last] = parse_value(text)
+    return cfg
+
+
+# shortcut flag -> config field it sets
+SHORTCUTS = {"iterations": "train.iterations", "B": "env.B", "T": "env.T", "name": "name"}
+
+
+def add_override_args(parser: argparse.ArgumentParser):
+    """--set KEY=VALUE ... plus shortcut flags for the most common fields."""
+    parser.add_argument("--set", nargs="+", default=[], metavar="KEY=VALUE",
+                        help="override config fields, e.g. env.mu=5e-4 ppo.lr=1e-3")
+    group = parser.add_argument_group("shortcuts for --set")
+    group.add_argument("--iterations", type=int, help="= --set train.iterations=N")
+    group.add_argument("--B", type=int, help="= --set env.B=N (parallel episodes per iteration)")
+    group.add_argument("--T", type=int, help="= --set env.T=N (steps per episode)")
+    group.add_argument("--name", help="= --set name=NAME (folder runs/NAME/)")
+
+
+def collect_overrides(args) -> list[str]:
+    """--set entries plus the shortcut flags, as one list of 'key=value' strings."""
+    overrides = list(args.set)
+    set_keys = {item.partition("=")[0] for item in overrides}
+    for flag, key in SHORTCUTS.items():
+        value = getattr(args, flag)
+        if value is None:
+            continue
+        if key in set_keys:
+            raise ValueError(f"--{flag} and --set {key}=... both given")
+        overrides.append(f"{key}={value}")
+    return overrides
+
+
+def validate_config(cfg: dict):
+    """Fail early on typos such as 'evn.B' or 'ppo.learning_rate'."""
+    allowed = {
+        "env": set(inspect.signature(VecMarket.__init__).parameters) - {"self", "seed"},
+        "ppo": {f.name for f in dataclasses.fields(PPOConfig)},
+        "train": {"iterations", "log_every", "eval_episodes"},
+    }
+    unknown = set(cfg) - set(allowed) - {"name"}
+    if unknown:
+        raise ValueError(f"unknown config sections: {sorted(unknown)}")
+    for section, keys in allowed.items():
+        bad = set(cfg.get(section, {})) - keys
+        if bad:
+            raise ValueError(f"unknown keys in '{section}': {sorted(bad)}; allowed: {sorted(keys)}")
 
 
 @torch.no_grad()
@@ -101,9 +178,11 @@ def main():
     parser.add_argument("config", help="path to a YAML config, e.g. predation/configs/victim_unconstrained.yaml")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--force", action="store_true", help="overwrite an existing run directory")
+    add_override_args(parser)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = apply_overrides(load_config(args.config), collect_overrides(args))
+    validate_config(cfg)
     run_dir = RUNS_DIR / cfg["name"] / f"seed{args.seed}"
     if run_dir.exists() and not args.force:
         sys.exit(f"{run_dir} already exists; use --force to overwrite")

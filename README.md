@@ -26,11 +26,11 @@ Lagrangian victims, predator, co-training.
 envs/vec_env.py           vectorised two-agent market
 agents/networks.py        actor (Gaussian policy) and critic
 agents/ppo.py             PPO and collect_rollout()
-train_victim.py           train one victim: config -> runs/<name>/seed<N>/
+train_victim.py           train one victim, one seed: config -> runs/<name>/seed<N>/
+launch.py                 several seeds in parallel + mean/std over seeds
 plotting.py               learning curves
 configs/                  one YAML per experiment
-scripts/                  multi-seed runs, Kaggle notebook builder
-notebooks/                self-contained Kaggle notebook
+scripts/                  start training on the server
 ```
 
 ## Quick start
@@ -43,11 +43,20 @@ python -m venv .venv && .venv/bin/pip install -r predation/requirements.txt
 .venv/bin/tensorboard --logdir predation/runs        # live curves at http://localhost:6006
 ```
 
-Several seeds in parallel (one thread per process):
+Several seeds in parallel; `--iterations`, `--B`, `--T`, `--name` are shortcuts, any other
+config field can be overridden with `--set`:
 
 ```bash
-predation/scripts/run_victim_seeds.sh predation/configs/victim_unconstrained.yaml 4 0 1 2 3 4
+.venv/bin/python -m predation.launch predation/configs/victim_unconstrained.yaml \
+    --seeds 0-4 --workers 4 --iterations 150 --B 512 --T 200 --name victim_big --set ppo.lr=1e-3
+```
+
+Same on the server (after `git push svoi master`), as a CPU-capped background job:
+
+```bash
+predation/scripts/train_on_server.sh --seeds 0-4 --iterations 150
 ```
 
 Each run writes `config.yaml`, `log.csv`, `model.pt`, `summary.json`, `training.png` and
-TensorBoard events. Same seed on the same machine gives identical results.
+TensorBoard events; `launch` adds `summary_over_seeds.json`. Same seed on the same machine
+gives identical results.
