@@ -4,8 +4,14 @@ Victim action a in [-1, 1]  -> target fraction of max position f = (a + 1) / 2.
 Predator action in [-1, 1]  -> trade of a * pred_trade shares (0 if no predator).
 Equity is marked at LIQUIDATION value: cash + pos*S - gamma/2 * pos^2, so an agent
 cannot create paper profit by pushing the price with its own trades.
+
+Victim cost per step: a CostStrategy object (see predation/cost_strategy/), chosen by
+cost_mode = "drawdown" | "max_drawdown" (name, as in the YAML configs) or passed in ready-made.
+The market only reports the drawdown; any memory the cost needs lives in the strategy.
 """
 import numpy as np
+
+from ..cost_strategy import make_cost
 
 
 class VecMarket:
@@ -13,8 +19,10 @@ class VecMarket:
 
     def __init__(self, B=64, T=120, s0=100.0, mu=0.0003, sigma=0.004, gamma=1e-3, eta=5e-4,
                  noise_flow=30.0, cash0=100_000.0, max_pos=3000.0, max_trade=600.0,
-                 cost_start=0.03, shield_limit=None, pred_trade=350.0, pred_cap=3500.0, seed=0):
+                 cost_start=0.03, cost_mode="drawdown", shield_limit=None, pred_trade=350.0,
+                 pred_cap=3500.0, seed=0):
         self.__dict__.update(locals()); del self.__dict__["self"]
+        self.cost = make_cost(cost_mode, cost_start)
         self.rng = np.random.default_rng(seed)
         self.obs_dim = self.K + 4
 
@@ -28,6 +36,7 @@ class VecMarket:
         self.cash_v = np.full(B, self.cash0); self.pos_v = np.zeros(B)
         self.cash_p = np.full(B, self.cash0); self.pos_p = np.zeros(B)
         self.peak_v = np.full(B, self.cash0)
+        self.cost.reset(B)
         self.rets = np.zeros((B, self.K))
         self.stopped = np.zeros(B, bool)
         self.last_qv = np.zeros(B)
@@ -70,5 +79,7 @@ class VecMarket:
         self.peak_v = np.maximum(self.peak_v, e_v)
         r_v = np.log(np.maximum(e_v, 1.0) / np.maximum(e_v0, 1.0))
         r_p = (e_p - e_p0) / self.cash0
-        cost = np.maximum(0.0, self.drawdown() - self.cost_start)
+
+        cost = self.cost.compute_cost(self.drawdown())
+
         return self.obs_victim(), r_v, cost, r_p, self.t >= self.T
