@@ -1,26 +1,4 @@
-"""PPO-Lagrangian: PPO with a constraint on the expected episode cost (skeleton).
 
-Constrained MDP:   max_pi J_r(pi)   subject to   J_c(pi) <= cost_budget
-Lagrangian:        L(pi, lam) = J_r(pi) - lam * (J_c(pi) - cost_budget),   lam >= 0
-
-The policy ascends L (advantage A_r - lam * A_c), the multiplier descends it
-(lam grows while the constraint is violated, shrinks towards 0 while it is satisfied).
-
-Differences to plain PPO, everything else is inherited:
-  1. a second critic V_c(s) that predicts future cost,
-  2. GAE twice: for the reward and for the cost,
-  3. combined advantage A_r - lam * A_c for the actor,
-  4. after every iteration lam = max(0, lam + lambda_lr * (mean_episode_cost - cost_budget)).
-
-collect_rollout() needs no change: it already records batch["costs"] and batch["ep_cost"],
-and the cost critic can evaluate the stored observations at the start of update(),
-because no network changes while a rollout is being collected.
-
-Open design decisions (see the discussion notes) that affect this file:
-  - which cost: drawdown above cost_start (now) or the same risk measure as the shield,
-  - cost keeps accruing after the victim went flat (drawdown is measured from the peak),
-  - gamma for the cost: the budget is an undiscounted episode sum, the critic is discounted.
-"""
 from dataclasses import dataclass, asdict
 import torch.nn as nn
 import numpy as np
@@ -48,27 +26,11 @@ class PPOLagrangian(PPO):
         self.lagrange = cfg.lambda_init  # lam; plain float, it is not trained by the optimizer
 
     def update_lambda(self, mean_episode_cost: float) -> float:
-        """Dual step after an iteration; returns the new multiplier.
-        lam <- max(0, lam + lambda_lr * (mean_episode_cost - cost_budget))
-        mean_episode_cost: batch["ep_cost"].mean() of the rollout that was just collected.
-        """
+
         self.lagrange = max(0, self.lagrange + self.cfg.lambda_lr * (mean_episode_cost - self.cfg.cost_budget))
         return self.lagrange
 
     def update(self, batch: dict) -> dict:
-        """batch from collect_rollout() -> training statistics (floats).
-
-        Steps:
-          1. cost values V_c(s) for batch["obs"]                      -> (T, B), no grad
-          2. reward GAE on batch["rewards"] * reward_scale             -> adv_r, ret_r
-             cost   GAE on batch["costs"]   * cost_scale               -> adv_c, ret_c
-          3. adv = adv_r - lam * adv_c, then normalise (optionally divide by 1 + lam first,
-             so the scale of the advantage does not grow with lam)
-          4. the PPO loop of the parent class with
-             loss = policy_loss + vf_coef * (value_loss_r + value_loss_c) - ent_coef * entropy
-          5. update_lambda(batch["ep_cost"].mean())
-          6. stats: parent stats + "lagrange", "cost_value_loss", "ep_cost", "cost_budget"
-        """
 
         cfg = self.cfg
         with torch.no_grad():
@@ -123,7 +85,7 @@ class PPOLagrangian(PPO):
 
     def save(self, path: str):
         torch.save({"actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
-                    "cost_critic": self.cost_critic.state_dict(), "lagrange": self.lagrange,
+                    "cost_critic": self.cost_critic.state_dict(), "lagrange": float(self.lagrange),
                     "cfg": asdict(self.cfg)}, path)
 
     def load(self, path: str):
